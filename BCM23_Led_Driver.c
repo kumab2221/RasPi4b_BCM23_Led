@@ -19,9 +19,8 @@ MODULE_LICENSE("Dual MIT/GPL");
 #define DRIVER_NAME "BCM23_Led"				// デバイス名
 
 /* ペリフェラルレジスタの物理アドレス(BCM2711の仕様書より) */
-#define REG_ADDR_BASE              (0xFE000000)       /* bcm_host_get_peripheral_address()の方がbetter */
+#define REG_ADDR_BASE              (0xFE000000)
 #define REG_ADDR_GPIO_BASE         (REG_ADDR_BASE + 0x00200000)
-#define REG_ADDR_GPIO_LENGTH       4096
 #define REG_ADDR_GPIO_GPFSEL_2     0x0008
 #define REG_ADDR_GPIO_OUTPUT_SET_0 0x001C
 #define REG_ADDR_GPIO_OUTPUT_CLR_0 0x0028
@@ -73,12 +72,10 @@ static int bcm23_led_open(struct inode *inode, struct file *file)
 	strlcat(p->buffer, "dummy", 5);
 	file->private_data = p;
 
-	printk("mydevice_open");
-
     // 物理メモリアドレスをカーネル仮想アドレスへマッピングする
-    int address = (int)ioremap_cache(REG_ADDR_GPIO_BASE + REG_ADDR_GPIO_GPFSEL_2, 4);
+    int address = (int)ioremap_cache(REG_ADDR_GPIO_BASE , PAGE_SIZE);
     // GPIO23を出力に設定
-    REG(address) = 1 << 9;
+    REG(address + REG_ADDR_GPIO_GPFSEL_2) |= 1 << 9;
 	// I/Oメモリアクセス終了時呼び出し関数
     iounmap((void*)address);
 
@@ -99,11 +96,12 @@ static ssize_t bcm23_led_read(struct file *filp, char __user *buf, size_t count,
 	if(count>NUM_BUFFER) count = NUM_BUFFER;
 	
 	/* ARM(CPU)から見た物理アドレス → 仮想アドレス(カーネル空間)へのマッピング */
-    int address = address = (int)ioremap_cache(REG_ADDR_GPIO_BASE + REG_ADDR_GPIO_LEVEL_0, 4);
-    int val = (REG(address) & (1 << 9)) != 0;
+    int address = (int)ioremap_cache(REG_ADDR_GPIO_BASE, PAGE_SIZE);
+    int val = (REG(address + REG_ADDR_GPIO_LEVEL_0) & (1 << 23)) != 0;
 
     struct file_data* p = filp->private_data;
 	p->buffer[0] = val + '0';
+	p->buffer[1] = '\0';
 	if (copy_to_user(buf, p->buffer, count)!=0)
 		return -EFAULT;
 
@@ -116,25 +114,26 @@ static ssize_t bcm23_led_write(struct file *filp, const char __user *buf, size_t
 {
 	int address;
 	struct file_data* p = filp->private_data;
-	if (copy_from_user(p->buffer, buf, count) != 0)
+	if (copy_from_user(p->buffer, buf, count) != 0){
 		return -EFAULT;
-
+	}
     //GPIO23のHIGH/LOWを取得
     if ( count != 1){
         return count;
     }
 
+	address = (int)ioremap_cache(REG_ADDR_GPIO_BASE, PAGE_SIZE);
     switch(p->buffer[0]){
     case '0': // LOW
-		address = (int)ioremap_cache(REG_ADDR_GPIO_BASE + REG_ADDR_GPIO_OUTPUT_CLR_0, 4);
+		REG(address+REG_ADDR_GPIO_OUTPUT_CLR_0) |= 1 << 23;
         break;
     case '1': // HIGH
-		address = (int)ioremap_cache(REG_ADDR_GPIO_BASE + REG_ADDR_GPIO_OUTPUT_SET_0, 4);
+		REG(address+REG_ADDR_GPIO_OUTPUT_SET_0) |= 1 << 23;
         break;
     default:
         break;
     }
-	REG(address) = 1 << 23;
+	DUMP_REG(address + REG_ADDR_GPIO_LEVEL_0);
 	iounmap((void*)address);
 
 	return count;
@@ -213,5 +212,6 @@ static void bcm23_led_exit(void)
 	cdev_del(&led23_cdev);
 	/* このデバイスドライバで使用していたメジャー番号の登録を取り除く */
 	unregister_chrdev_region(dev, MINOR_NUM);
+
 }
 
